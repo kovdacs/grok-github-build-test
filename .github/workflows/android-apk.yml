@@ -18,36 +18,57 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # GitHub-hosted ubuntu runners ship an Android SDK; avoid android-actions/setup-android
+      # default which tries to install the obsolete "tools" package and fails.
+      - name: Locate preinstalled Android SDK
+        run: |
+          if [ -d "$ANDROID_HOME" ]; then
+            echo "ANDROID_HOME already set: $ANDROID_HOME"
+          elif [ -d /usr/local/lib/android/sdk ]; then
+            echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+            echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+            echo "Found /usr/local/lib/android/sdk"
+          else
+            echo "No Android SDK found on runner" >&2
+            exit 1
+          fi
 
       - name: Verify Java
         run: |
           java -version
           echo "JAVA_HOME=$JAVA_HOME"
 
-      - name: Verify Android SDK paths
+      - name: Accept SDK licenses and install platform + build-tools
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          test -n "$ANDROID_HOME"
-          test -d "$ANDROID_HOME"
-          ls -la "$ANDROID_HOME"
-          command -v sdkmanager
-          sdkmanager --list_installed 2>/dev/null | head -80 || sdkmanager --list 2>/dev/null | head -40
+          set -e
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "Using SDK=$SDK"
+          test -d "$SDK"
+          # find sdkmanager
+          SM=$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SM" ]; then
+            SM=$(command -v sdkmanager || true)
+          fi
+          test -n "$SM"
+          echo "sdkmanager=$SM"
+          yes | "$SM" --sdk_root="$SDK" --licenses >/tmp/sdk-licenses.txt || true
+          "$SM" --sdk_root="$SDK" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
-      - name: Install Android platform and build-tools
+      - name: Verify Android SDK components
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
-          yes | sdkmanager --licenses >/dev/null || true
-
-      - name: Verify platform and build-tools exist
-        run: |
-          test -d "$ANDROID_HOME/platforms/android-34"
-          ls -la "$ANDROID_HOME/platforms/android-34" | head
-          test -d "$ANDROID_HOME/build-tools/34.0.0"
-          ls "$ANDROID_HOME/build-tools/34.0.0" | head
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" version || true
+          set -e
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK"
+          ls -la "$SDK"
+          test -d "$SDK/platforms/android-34"
+          echo "platform android-34 OK"
+          ls "$SDK/platforms/android-34" | head
+          test -d "$SDK/build-tools/34.0.0"
+          echo "build-tools 34.0.0 OK"
+          ls "$SDK/build-tools/34.0.0" | head
+          "$SDK/build-tools/34.0.0/aapt" version || "$SDK/build-tools/34.0.0/aapt2" version --help | head -3 || true
+          SM=$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          "$SM" --sdk_root="$SDK" --list_installed | tee /tmp/sdk-installed.txt | head -60
 
       - name: Verify Gradle Wrapper
         run: |
@@ -67,34 +88,27 @@ jobs:
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Verify APK on disk
-        id: apk
         run: |
+          set -e
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -f "$APK"
           SIZE=$(stat -c%s "$APK")
-          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
-          echo "apk_size=$SIZE" >> "$GITHUB_OUTPUT"
           echo "APK path: $APK"
           echo "APK size bytes: $SIZE"
           test "$SIZE" -gt 0
-          # basic zip/apk structure
           python3 - <<'PY'
-          import zipfile, os, sys
+          import zipfile
           apk = "app/build/outputs/apk/debug/app-debug.apk"
           z = zipfile.ZipFile(apk)
           names = z.namelist()
           print("zip_entries", len(names))
-          for need in ("AndroidManifest.xml", "classes.dex"):
-              ok = any(n == need or n.endswith("/"+need) or n == need for n in names)
-              # dex may be classes.dex at root
-              print(need, "present=", need in names or any(n.endswith(need) for n in names))
           assert "AndroidManifest.xml" in names
-          assert any(n == "classes.dex" or n.startswith("classes") and n.endswith(".dex") for n in names)
+          assert any(n == "classes.dex" or (n.startswith("classes") and n.endswith(".dex")) for n in names)
           print("apk_structure_ok")
           PY
-          # aapt dump if available
-          if [ -x "$ANDROID_HOME/build-tools/34.0.0/aapt" ]; then
-            "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | head -20
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          if [ -x "$SDK/build-tools/34.0.0/aapt" ]; then
+            "$SDK/build-tools/34.0.0/aapt" dump badging "$APK" | head -20
           fi
 
       - name: Upload APK artifact
