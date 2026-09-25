@@ -1,0 +1,30 @@
+name: smoke-test
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Print OS
+        run: |
+          uname -a
+          cat /etc/os-release | head -5
+
+      - name: Print Git version
+        run: git --version
+
+      - name: Print Python version
+        run: python3 --version
+
+      - name: Print Node version
+        run: node --version
+
+      - name: Simple success command
+        run: echo "smoke-test OK" && test 1 -eq 1
